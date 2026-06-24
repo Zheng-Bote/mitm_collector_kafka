@@ -20,7 +20,7 @@ The following arguments can be passed via the `args` column in the `scheduled_pr
 ```json
 {
   "source_name": "KAFKA_EMPLOYEE",
-  "topic": "bmw.hrmasterdata.Employee.v2",
+  "topic": "cnx.hrmasterdata.Employee.v2",
   "business_key_column": "pernr",
   "idle_timeout_seconds": 60
 }

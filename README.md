@@ -35,11 +35,8 @@ The following arguments can be passed via the `args` column in the `scheduled_pr
 
 | Variable | Description |
 |---|---|
-| `MITM_DB_HOST` | Target database host |
-| `MITM_DB_PORT` | Target database port |
-| `MITM_DB_USER` | Target database user |
-| `MITM_DB_PASSWORD` | Target database password |
-| `MITM_DB_NAME` | Target database name |
+| `MITM_DB_CONFIG_JSON` | (**Preferred**) JSON-encoded credentials containing a nested `"db"` object for the target database. |
+| `MITM_DB_HOST` (and others) | (**Fallback**) Direct environment variables for the database connection (Host, Port, User, Password, Name). |
 | `MASTER_KEY` | Key Encryption Key (KEK) for Envelope Encryption |
 | `SCHEDULER_SOCKET_PATH` | Path to the Unix Domain Socket of the Scheduler |
 | `RUN_ID` | Execution ID given by the Scheduler |

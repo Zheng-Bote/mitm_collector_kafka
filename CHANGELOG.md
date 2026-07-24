@@ -5,6 +5,11 @@ All notable changes to the `mitm_collector_kafka` component will be documented i
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.5.0] - 2026-07-24
+
+### Changed
+- **Correlation ID Fallback**: Changed the fallback for `correlation_id` from a hardcoded `"UNKNOWN"` string to a dynamically generated UUID (`uuid.New().String()`). This critical fix prevents rows with missing or NULL business keys from being falsely aggregated into a single record by the Transformation Engine.
+
 ## [v0.4.0] - 2026-07-15
 
 ### Added

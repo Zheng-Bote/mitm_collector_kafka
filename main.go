@@ -42,7 +42,7 @@ import (
 var (
 	appName        = "Kafka Collector"
 	appDescription = "Extracts data from Kafka streams"
-	version        = "0.4.0"
+	version        = "0.5.0"
 )
 
 // TargetDBConfig defines parameters for the MitM target database passed via JSON CLI argument
@@ -264,8 +264,10 @@ func main() {
 	// 4. Connect to MitM target database
 	mitmPool, err := pgxpool.New(ctx, mitmDSN)
 	if err != nil {
-		ipc.SendEvent("failed", fmt.Sprintf("Failed to connect to MitM database: %v", err), 0)
-		log.Fatalf("Failed to connect to MitM database: %v", err)
+		msg := fmt.Sprintf("Failed to connect to MitM database: %v", err)
+		ipc.SendEvent("failed", msg, 0)
+		ipc.SendAudit("ERROR: " + msg)
+		log.Fatalf(msg)
 	}
 	defer mitmPool.Close()
 
@@ -369,8 +371,10 @@ func main() {
 	// 10. Parse source Kafka configuration
 	var sourceCfg SourceDBConfig
 	if err := json.Unmarshal(decryptedConfigBytes, &sourceCfg); err != nil {
-		ipc.SendEvent("failed", fmt.Sprintf("Failed to parse decrypted source database configuration: %v", err), 0)
-		log.Fatalf("Failed to parse decrypted source config: %v", err)
+		msg := fmt.Sprintf("Failed to parse decrypted source configuration: %v", err)
+		ipc.SendEvent("failed", msg, 0)
+		ipc.SendAudit("ERROR: " + msg)
+		log.Fatalf(msg)
 	}
 
 	if topicName == "" {
@@ -380,6 +384,8 @@ func main() {
 			topicName = "bmw.hrmasterdata.Employee.v2"
 		}
 	}
+
+	ipc.SendAudit(fmt.Sprintf("DEBUG: Trying to connect to Kafka at %s with Topic '%s' (User: %s)", sourceCfg.Host, topicName, sourceCfg.User))
 
 	// 11. Connect to Kafka
 	saslMechanism := plain.Mechanism{
@@ -444,7 +450,8 @@ func main() {
 			if len(msg.Key) > 0 {
 				businessKey = string(msg.Key)
 			} else {
-				businessKey = "UNKNOWN"
+				// Fallback to random UUID if BusinessKeyColumn is missing or value is empty
+				businessKey = uuid.New().String()
 			}
 		}
 

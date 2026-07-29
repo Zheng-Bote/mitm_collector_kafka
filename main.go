@@ -31,6 +31,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -69,7 +70,7 @@ type SourceDBConfig struct {
 // CollectorArgs defines optional runtime arguments passed by the scheduler as JSON
 type CollectorArgs struct {
 	SourceName        string `json:"source_name"`
-	Table             string `json:"table"` // Used to derive topicName if Topic is empty
+	Table             string `json:"table"`         // Used to derive topicName if Topic is empty
 	CursorColumn      string `json:"cursor_column"` // Unused in Kafka but kept for compatibility
 	Topic             string `json:"topic"`
 	BusinessKeyColumn string `json:"business_key_column"`
@@ -147,6 +148,8 @@ func (c *IPCClient) SendAudit(message string) {
 }
 
 func main() {
+	version = strings.Split(version, "-")[0]
+
 	// 2. Load IPC Environment
 	var ipc *IPCClient
 	runIDStr := os.Getenv("RUN_ID")
@@ -169,7 +172,7 @@ func main() {
 	var targetCfg TargetDBConfig
 	configSource := "Environment Variables"
 	jsonConfig := os.Getenv("MITM_DB_CONFIG_JSON")
-	
+
 	if jsonConfig != "" {
 		var fullCfg struct {
 			DB struct {

@@ -30,11 +30,14 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/segmentio/kafka-go"
 	"github.com/segmentio/kafka-go/sasl/plain"
@@ -262,15 +265,25 @@ func main() {
 			targetCfg.User, targetCfg.Password, targetCfg.Host, targetCfg.Port, targetCfg.Database, sslMode)
 	}
 
-	ctx := context.Background()
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
 
 	// 4. Connect to MitM target database
-	mitmPool, err := pgxpool.New(ctx, mitmDSN)
+	config_mitmPool, err := pgxpool.ParseConfig(mitmDSN)
+	if err == nil {
+		config_mitmPool.MaxConns = 20
+		config_mitmPool.MaxConnIdleTime = 5 * time.Minute
+		config_mitmPool.MaxConnLifetime = 1 * time.Hour
+	}
+	var mitmPool *pgxpool.Pool
+	if err == nil {
+		mitmPool, err = pgxpool.NewWithConfig(ctx, config_mitmPool)
+	}
 	if err != nil {
 		msg := fmt.Sprintf("Failed to connect to MitM database: %v", err)
 		ipc.SendEvent("failed", msg, 0)
 		ipc.SendAudit("ERROR: " + msg)
-		log.Fatalf(msg)
+		log.Fatalf("%s", msg)
 	}
 	defer mitmPool.Close()
 
@@ -283,19 +296,12 @@ func main() {
 		log.Fatal("Missing MASTER_KEY environment variable")
 	}
 
-	var kek []byte
-	if decoded, err := base64.StdEncoding.DecodeString(masterKey); err == nil {
-		kek = decoded
-	} else {
-		kek = []byte(masterKey)
+	kek, err := parseKEK(masterKey)
+	if err != nil {
+		ipc.SendEvent("failed", err.Error(), 0)
+		log.Fatalf("Failed to parse KEK: %v", err)
 	}
 
-	// Adjust KEK to 32 bytes if necessary
-	if len(kek) != 32 {
-		adjusted := make([]byte, 32)
-		copy(adjusted, kek)
-		kek = adjusted
-	}
 
 	// 6. Query encrypted source credentials
 	var configPayload []byte
@@ -377,7 +383,7 @@ func main() {
 		msg := fmt.Sprintf("Failed to parse decrypted source configuration: %v", err)
 		ipc.SendEvent("failed", msg, 0)
 		ipc.SendAudit("ERROR: " + msg)
-		log.Fatalf(msg)
+		log.Fatalf("%s", msg)
 	}
 
 	if topicName == "" {
@@ -411,7 +417,7 @@ func main() {
 		StartOffset:    kafka.FirstOffset,
 		MinBytes:       1,
 		MaxBytes:       10e6,
-		CommitInterval: time.Second,
+		CommitInterval: 0,
 	})
 	defer reader.Close()
 
@@ -420,17 +426,61 @@ func main() {
 
 	// 12. Iterate and ingest messages dynamically
 	recordsIngested := 0
+	recordsFailed := 0
 	ipc.SendEvent("processing", "Reading Kafka messages", 70)
+
+	batchSize := 100
+	var batch *pgx.Batch
+	var msgsToCommit []kafka.Message
+
+	batch = &pgx.Batch{}
+
+	flushBatch := func() {
+		if batch.Len() == 0 {
+			return
+		}
+
+		br := mitmPool.SendBatch(ctx, batch)
+		
+		success := true
+		for i := 0; i < batch.Len(); i++ {
+			_, err := br.Exec()
+			if err != nil {
+				log.Printf("Batch insert error: %v", err)
+				success = false
+			}
+		}
+		br.Close() // explicitly close before committing messages
+
+		if success {
+			if err := reader.CommitMessages(context.Background(), msgsToCommit...); err != nil {
+				log.Printf("Failed to commit messages: %v", err)
+				recordsFailed += len(msgsToCommit)
+			} else {
+				recordsIngested += len(msgsToCommit)
+			}
+		} else {
+			recordsFailed += len(msgsToCommit)
+		}
+
+		// Reset batch
+		batch = &pgx.Batch{}
+		msgsToCommit = nil
+	}
 
 	for {
 		// Wait for up to 30 seconds for a new message
 		readCtx, readCancel := context.WithTimeout(ctx, idleTimeout)
-		msg, err := reader.ReadMessage(readCtx)
+		msg, err := reader.FetchMessage(readCtx)
 		readCancel()
 
 		if err != nil {
 			if readCtx.Err() == context.DeadlineExceeded {
 				log.Printf("No new messages for %v, breaking loop.", idleTimeout)
+				break
+			}
+			if ctx.Err() != nil {
+				log.Printf("Context cancelled, breaking loop.")
 				break
 			}
 			ipc.SendEvent("failed", fmt.Sprintf("Failed to read from Kafka: %v", err), 0)
@@ -453,8 +503,9 @@ func main() {
 			if len(msg.Key) > 0 {
 				businessKey = string(msg.Key)
 			} else {
-				// Fallback to random UUID if BusinessKeyColumn is missing or value is empty
-				businessKey = uuid.New().String()
+				log.Printf("Message missing business key and Kafka key, skipping")
+				recordsFailed++
+				continue
 			}
 		}
 
@@ -462,6 +513,7 @@ func main() {
 		nonce := make([]byte, 12)
 		if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 			log.Printf("Failed to generate random nonce: %v", err)
+			recordsFailed++
 			continue
 		}
 
@@ -472,21 +524,35 @@ func main() {
 		namespaceMitM := uuid.MustParse("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
 		correlationID := uuid.NewSHA1(namespaceMitM, []byte(businessKey))
 
-		// Insert into raw_ingestion in target database
-		_, err = mitmPool.Exec(ctx, `
+		// Queue insert into raw_ingestion in target database
+		batch.Queue(`
 			INSERT INTO raw_ingestion (topic, source_system, correlation_id, payload, nonce, dek_id, status)
 			VALUES ($1, $2, $3, $4, $5, $6, 'pending')
 		`, topicName, targetCfg.SourceName, correlationID, encryptedPayload, nonce, dekID)
-		if err != nil {
-			log.Printf("Failed to insert raw fragment: %v", err)
-			continue
-		}
+		msgsToCommit = append(msgsToCommit, msg)
 
-		recordsIngested++
+		if batch.Len() >= batchSize {
+			flushBatch()
+		}
 	}
+	flushBatch()
 
 	// 13. Finish execution
-	ipc.SendAudit(fmt.Sprintf("%s (%s) finished", appName, version))
-	ipc.SendEvent("finished", fmt.Sprintf("Successfully processed and ingested %d Kafka messages into RAW table", recordsIngested), 100)
-	log.Printf("Collector finished. Ingested %d messages.", recordsIngested)
+	ipc.SendAudit(fmt.Sprintf("%s (%s) finished. Success: %d, Failed: %d", appName, version, recordsIngested, recordsFailed))
+	ipc.SendEvent("finished", fmt.Sprintf("Successfully processed and ingested %d Kafka messages into RAW table (Failed: %d)", recordsIngested, recordsFailed), 100)
+	log.Printf("Collector finished. Ingested %d messages, Failed %d.", recordsIngested, recordsFailed)
+}
+
+func parseKEK(masterKey string) ([]byte, error) {
+	var kek []byte
+	if decoded, err := base64.StdEncoding.DecodeString(masterKey); err == nil {
+		kek = decoded
+	} else {
+		kek = []byte(masterKey)
+	}
+
+	if len(kek) != 32 {
+		return nil, fmt.Errorf("MASTER_KEY must be exactly 32 bytes, got %d bytes", len(kek))
+	}
+	return kek, nil
 }

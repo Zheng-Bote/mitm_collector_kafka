@@ -5,13 +5,19 @@ All notable changes to the `mitm_collector_kafka` component will be documented i
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [v0.6.0] - 2026-07-29
+## [v0.6.0] - 2026-08-29
 
 ### Changed
 
 - **Components Logging**: Refactored component version logging mechanism across all layers (Collectors, Transformation, Delivery, Scheduler) to consistently output a clean `Major.Minor.Patch` version format.
 
-## [v0.5.0] - 2026-07-24
+## [v0.5.0] - 2026-08-29
+
+### Changed/Added
+
+- Configured `pgxpool` connection limits (`MaxConns=20`, `MaxConnIdleTime=5m`, `MaxConnLifetime=1h`).
+- Implemented graceful shutdown with context cancellation on `SIGINT`/`SIGTERM`.
+- Optimized performance with batched operations.
 
 ### Changed
 

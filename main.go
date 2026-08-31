@@ -453,7 +453,16 @@ func main() {
 			return
 		}
 
-		br := mitmPool.SendBatch(ctx, batch)
+		tx, err := mitmPool.Begin(ctx)
+		if err != nil {
+			log.Printf("Failed to begin transaction for batch: %v", err)
+			recordsFailed += len(msgsToCommit)
+			batch = &pgx.Batch{}
+			msgsToCommit = nil
+			return
+		}
+
+		br := tx.SendBatch(ctx, batch)
 		
 		success := true
 		for i := 0; i < batch.Len(); i++ {
@@ -461,13 +470,23 @@ func main() {
 			if err != nil {
 				log.Printf("Batch insert error: %v", err)
 				success = false
+				break
 			}
 		}
-		br.Close() // explicitly close before committing messages
+		br.Close()
+
+		if success {
+			if err := tx.Commit(ctx); err != nil {
+				log.Printf("Failed to commit PostgreSQL transaction: %v", err)
+				success = false
+			}
+		} else {
+			tx.Rollback(ctx)
+		}
 
 		if success {
 			if err := reader.CommitMessages(context.Background(), msgsToCommit...); err != nil {
-				log.Printf("Failed to commit messages: %v", err)
+				log.Printf("Failed to commit Kafka messages: %v", err)
 				recordsFailed += len(msgsToCommit)
 			} else {
 				recordsIngested += len(msgsToCommit)

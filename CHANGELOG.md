@@ -5,6 +5,16 @@ All notable changes to the `mitm_collector_kafka` component will be documented i
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.8.0] - 2026-08-31
+
+### Added
+
+- **IPC Socket as Credential Broker**: The collector now fetches database credentials and the master key at runtime from the Scheduler via a Unix Domain Socket request (`get_credentials` with `RUN_ID` and `SCHEDULER_SOCKET_PATH`), instead of holding them locally.
+
+### Changed
+
+- **Kafka Offset Safety**: Implemented transactional PostgreSQL boundaries for batch ingestion. Batch inserts and Kafka message commits now execute within a `pgx.Tx` transaction, and `CommitMessages()` is strictly skipped if any PostgreSQL partial failure occurs.
+
 ## [v0.7.0] - 2026-08-29
 
 ### Changed

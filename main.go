@@ -47,7 +47,7 @@ import (
 var (
 	appName        = "Kafka Collector"
 	appDescription = "Extracts data from Kafka streams"
-	version        = "0.8.0"
+	version        = "0.8.1"
 )
 
 // TargetDBConfig defines parameters for the MitM target database passed via JSON CLI argument
